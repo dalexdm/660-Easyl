@@ -1,0 +1,15 @@
+global proc EasylUICreator()
+{
+	global string $gMainWindow;
+
+    setParent $gMainWindow;
+    menu
+    -label "PaintTool"
+    -parent $gMainWindow
+    -tearOff on
+    PaintMenu;
+    menuItem
+    -ann "Howdy there, partner."
+    -label "Paint Geometry"
+    -command "SetPaintTool";
+}

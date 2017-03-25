@@ -1,0 +1,34 @@
+global proc paintToolValues(string $toolName)
+{
+	string $icon = "polyMoveEdge.png";
+	string $helpTag = "paintTool";
+	toolPropertySetCommon $toolName $icon $helpTag;
+
+	string $parent = (`toolPropertyWindow -q -location` + "|paintTool");
+	setParent $parent;
+
+	float $startLevel = `paintContext -q -sl $toolName`;
+	float $endLevel = `paintContext -q -el $toolName`;
+	int $theMode = `paintContext -q -mode $toolName`;
+					
+	radioButtonGrp -e
+		-select $theMode
+		-on1 "ModeChange(1)"
+		-on2 "ModeChange(2)"
+		-on3 "ModeChange(3)"
+		ChoiceButtons;
+					
+	floatSliderGrp -e
+		-v	$startLevel
+		-en true
+		-cc	("paintContext -e -sl #1 " + $toolName)
+		StartingSlider;
+
+	floatSliderGrp -e
+		-v	$endLevel
+		-cc	("paintContext -e -el #1 " + $toolName)
+		EndingSlider;
+
+	toolPropertySelect paintTool;
+}
+

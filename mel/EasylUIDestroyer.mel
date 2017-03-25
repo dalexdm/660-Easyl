@@ -1,0 +1,4 @@
+global proc EasylUIDestroyer()
+{
+	deleteUI PaintMenu;
+}

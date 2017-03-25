@@ -1,0 +1,8 @@
+global proc ModeChange (int $input) {
+
+	floatSliderGrp -e
+		-en ($input != 1)
+		EndingSlider;
+
+	paintContext -e -mode $input paintContext1;
+}

@@ -1,0 +1,6 @@
+global proc SetPaintTool () {
+	if (!`objExists paintContext1`) {
+		paintContext;
+	}
+	setToolTo paintContext1;
+}

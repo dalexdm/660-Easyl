@@ -1,0 +1,66 @@
+global proc paintToolProperties()
+{
+	// Global template variables for form spacing
+	global int $gToolOptionBoxTemplateDescriptionMarginWidth;
+	global int $gToolOptionBoxTemplateFrameSpacing;
+	
+	string $parent = `toolPropertyWindow -q -location`;
+
+	setUITemplate -pushTemplate ToolOptionBoxTemplate;
+
+	setParent $parent;
+
+	// Form layout
+	$parent = `formLayout paintTool`;
+	
+		// Description frame
+		string $descriptionFrame = 
+		`frameLayout -label "Easyl Paint Tool" -mw $gToolOptionBoxTemplateDescriptionMarginWidth`;	
+
+			columnLayout;
+			text -label "Paint with the mouse to create curves related to scene geometry." paintToolLabel1;
+			
+		setParent $parent;
+
+		string $snappingFrame =
+		`frameLayout -label "Tool Settings"`;
+			columnLayout;
+
+			radioButtonGrp -nrb 3
+				-label ("Draw Mode") 
+				-label1 ("Level Set")
+				-label2 ("Fur")
+				-label3 ("Feather")
+				-data1 true
+				-data2 false
+				-data3 false
+				ChoiceButtons;
+							
+			floatSliderGrp -field true -l "Starting Level Set"
+				-min 0.0 -max 2.0 -fmx 10.0 -v 0.0 StartingSlider;
+
+			floatSliderGrp -field true -l "Ending Level Set"
+				-min 0.0 -max 2.0 -en false -fmx 10.0 -v 0.0 EndingSlider;
+
+		setParent $parent;
+		
+	setParent ..;
+
+	// Attach Description/Settings frames to form layout
+	formLayout -e
+		-af $descriptionFrame "top" $gToolOptionBoxTemplateFrameSpacing
+		-af $descriptionFrame "left" $gToolOptionBoxTemplateFrameSpacing
+		-af $descriptionFrame "right" $gToolOptionBoxTemplateFrameSpacing
+		-an $descriptionFrame "bottom"
+				
+		-ac $snappingFrame "top" $gToolOptionBoxTemplateFrameSpacing $descriptionFrame
+		-af $snappingFrame "left" $gToolOptionBoxTemplateFrameSpacing
+		-af $snappingFrame "right" $gToolOptionBoxTemplateFrameSpacing
+		-an $snappingFrame "bottom"
+		
+	$parent;
+
+	setUITemplate -popTemplate;
+
+}
+
