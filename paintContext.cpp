@@ -50,7 +50,67 @@ void paintContext::doPressCommon(MEvent & event)
 }
 
 //TODO: ensure curve is high enough resolution for later optim.
-void paintContext::makeCurve() {
+//
+//
+//
+//
+//
+float paintContext::angleTerm() {
+	float output = 0;
+	MPoint p1,p2,p3;
+	MVector v1, v2;
+	for (int i = 0; i < rays.size() - 2; i++) {
+		//get unit vectors representing consecutive stroke segments
+		p1 = rays[i].point(); p2 = rays[i + 1].point(); p3 = rays[i + 3].point();
+		v1 = p2 - p1; v2 = p3 - p2;
+		v1.normalize(); v2.normalize();
+		//output the 'cost': 0 = parallel... 1 = orthogonal
+		output += pow(1 - (v1 * v2),2);
+	}
+	return output;
+}
+
+float paintContext::lengthTerm() {
+	float output = 0;
+	for (int i = 0; i < rays.size()-1; i++) {
+		output += pow(rays[i + 1].point().distanceTo(rays[i].point()),2);
+	}
+	return output;
+}
+
+float paintContext::errorTerm() {
+	
+	MItDag itr(MItDag::kDepthFirst, MFn::kMesh);
+	MObject meshObj = itr.item();
+	MFnMesh mesh(meshObj);
+
+	MPoint actual, closest;
+	float output = 0;
+
+	if (mode == ModeType::LevelMode) {
+		for (int i = 0; i < rays.size(); i++) {
+			actual = rays[i].point();
+			mesh.getClosestPoint(actual, closest);
+			output += pow(actual.distanceTo(closest) - startLevel, 2);
+		}
+	} else {
+		//first
+		actual = rays[0].point();
+		mesh.getClosestPoint(actual, closest);
+		output += pow(actual.distanceTo(closest) - startLevel, 2);
+		//last
+		actual = rays[rays.size() - 1].point();
+		mesh.getClosestPoint(actual, closest);
+		output += pow(actual.distanceTo(closest) - endLevel, 2);
+	}
+	return output;
+}
+
+void initializeT(MFnMesh& mesh, PaintRay& r) {
+
+}
+
+void paintContext::initializeCurve() {
 
 	MStatus s;
 	PaintRay* r;
@@ -73,7 +133,7 @@ void paintContext::makeCurve() {
 			if (mesh.intersect(r->origin, r->direction, MPointArray(), &s)) {
 				while (true) {
 					MPoint closestPoint;
-					MPoint thisPoint = r->origin + r->direction * r->t;
+					MPoint thisPoint = r->point();
 					mesh.getClosestPoint(thisPoint, closestPoint);
 					error = thisPoint.distanceTo(closestPoint);
 					error -= startLevel;
@@ -85,7 +145,7 @@ void paintContext::makeCurve() {
 			else {
 				while (true) {
 					MPoint closestPoint;
-					MPoint thisPoint = r->origin + r->direction * r->t;
+					MPoint thisPoint = r->point();
 					mesh.getClosestPoint(thisPoint, closestPoint);
 					error = thisPoint.distanceTo(closestPoint);
 					error -= startLevel;
@@ -109,7 +169,7 @@ void paintContext::makeCurve() {
 			float lastError = 10000;
 			while (true) {
 				MPoint closestPoint;
-				MPoint thisPoint = r->origin + r->direction * r->t;
+				MPoint thisPoint = r->point();
 				mesh.getClosestPoint(thisPoint, closestPoint);
 				error = thisPoint.distanceTo(closestPoint);
 				if (i > 0) error -= endLevel;
@@ -129,12 +189,16 @@ void paintContext::makeCurve() {
 			r->t = ((float)i / (float)rays.size()) * (rays.back().t - rays.front().t) + rays.front().t;
 		}
 	}
+}
 
+void paintContext::shapeCurve() {
+
+	PaintRay r;
 	//call curve creation
 	MString base = "curve -d 1";
 	for (int i = 0; i < rays.size(); i++) {
-		r = &rays[i];
-		MPoint m = r->origin + r->direction * r->t;
+		r = rays[i];
+		MPoint m = r.point();
 		base += "-p";
 		base += MString(" ") + m[0] + " " + m[1] + " " + m[2];
 	}
@@ -154,10 +218,19 @@ void paintContext::doReleaseCommon(MEvent & event)
 
 	rays.push_back(PaintRay(newOrg, newDir));
 
-	makeCurve();
+	initializeCurve();
+	shapeCurve();
 
 	MGlobal::displayInfo("Ended with " + rays.size() + MString(" rays!"));
 }
+//
+//
+//
+//
+//
+//
+//
+//END TODO
 
 MStatus paintContext::doPress(MEvent & event)
 {

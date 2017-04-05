@@ -16,6 +16,7 @@ public:
 	PaintRay(MPoint o, MVector d) {
 		origin = o; direction = d; t = 0;
 	}
+	MPoint point() { return origin + t*direction; }
 };
 
 enum ModeType {ErrorMode,LevelMode,FeatherMode,FurMode};
@@ -49,7 +50,11 @@ private:
 	// Press and Release shared operations (agnostic of viewport)
 	void doPressCommon(MEvent & event);
 	void doReleaseCommon(MEvent & event);
-	void makeCurve();
+	void initializeCurve();
+	float angleTerm();
+	float lengthTerm();
+	float errorTerm();
+	void shapeCurve();
 
 	// Temporary vector abstractions
 	std::vector<PaintRay> rays;
@@ -58,6 +63,9 @@ private:
 	short lastx, lasty, threshold;
 	float startLevel, endLevel;
 	ModeType mode;
+	float weight_a, weight_l, weight_e;
+	float assessObj();
+	std::vector<float> assessGradient();
 
 	// screen space object
 	M3dView view;

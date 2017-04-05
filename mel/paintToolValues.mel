@@ -26,6 +26,7 @@ global proc paintToolValues(string $toolName)
 
 	floatSliderGrp -e
 		-v	$endLevel
+		-en ($theMode != 1)
 		-cc	("paintContext -e -el #1 " + $toolName)
 		EndingSlider;
 
