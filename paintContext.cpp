@@ -1,13 +1,16 @@
 #include "paintContext.h"
 #include <maya\M3dView.h>
 #include <maya\MItDag.h>
-#include <maya\MFnMesh.h>
 #include <maya\MPointArray.h>
 #include <maya\MGlobal.h>
 
 const char helpString[] = "Drag with the left mouse button to paint";
 const float kMaxError = 0.1;
 const int thresholdDefault = 3;
+
+void print(MString s) {
+	MGlobal::displayInfo(s);
+}
 
 paintContext::paintContext()
 {
@@ -16,11 +19,12 @@ paintContext::paintContext()
 	endLevel = 0;
 	mode = LevelMode;
 
-	// Tell the context which XPM to use, currently uses MarqueeTool's xmp
+	// Tell the context which XPM (menu icon) to use, currently uses MarqueeTool's xmp
 	setImage("Easyl.xpm", MPxContext::kImage1);
 
 }
 
+//determine the tooltip
 void paintContext::toolOnSetup(MEvent &)
 {
 	setHelpString(helpString);
@@ -45,31 +49,27 @@ void paintContext::doPressCommon(MEvent & event)
 	lastx = x; lasty = y;
 
 	rays.push_back(PaintRay(newOrg,newDir));
-
-	MGlobal::displayInfo("Started");
 }
 
-//TODO: ensure curve is high enough resolution for later optim.
-//
-//
-//
-//
-//
+//Components of objective function
 float paintContext::angleTerm() {
+	//cycle through each pair of adjacent segments
 	float output = 0;
+	float dot;
 	MPoint p1,p2,p3;
 	MVector v1, v2;
+	
 	for (int i = 0; i < rays.size() - 2; i++) {
 		//get unit vectors representing consecutive stroke segments
-		p1 = rays[i].point(); p2 = rays[i + 1].point(); p3 = rays[i + 3].point();
+		p1 = rays[i].point(); p2 = rays[i + 1].point(); p3 = rays[i + 2].point();
 		v1 = p2 - p1; v2 = p3 - p2;
-		v1.normalize(); v2.normalize();
+		dot = v1.normal() * v2.normal();
+		if (dot < 0) dot = 0;
 		//output the 'cost': 0 = parallel... 1 = orthogonal
-		output += pow(1 - (v1 * v2),2);
+		output += pow(1 - dot,2);
 	}
 	return output;
 }
-
 float paintContext::lengthTerm() {
 	float output = 0;
 	for (int i = 0; i < rays.size()-1; i++) {
@@ -77,9 +77,8 @@ float paintContext::lengthTerm() {
 	}
 	return output;
 }
-
 float paintContext::errorTerm() {
-	
+	//find the mesh in the scene
 	MItDag itr(MItDag::kDepthFirst, MFn::kMesh);
 	MObject meshObj = itr.item();
 	MFnMesh mesh(meshObj);
@@ -87,13 +86,17 @@ float paintContext::errorTerm() {
 	MPoint actual, closest;
 	float output = 0;
 
+	//for level mode, the error is counted for every ray
 	if (mode == ModeType::LevelMode) {
 		for (int i = 0; i < rays.size(); i++) {
 			actual = rays[i].point();
 			mesh.getClosestPoint(actual, closest);
-			output += pow(actual.distanceTo(closest) - startLevel, 2);
+			output += pow(actual.distanceTo(closest) - startLevel - 0.1, 2);
 		}
+
+	//in fur/feather, only the accuracy of the first and last points are weighted
 	} else {
+		MGlobal::displayError("Didn't Expect to be using this yet...");
 		//first
 		actual = rays[0].point();
 		mesh.getClosestPoint(actual, closest);
@@ -106,105 +109,137 @@ float paintContext::errorTerm() {
 	return output;
 }
 
-void initializeT(MFnMesh& mesh, PaintRay& r) {
+//Assess all three objective functions and weight each as prescribed in paper
+float paintContext::assessObj() {
+	float angle = angleTerm();
+	float error = errorTerm();
 
+	switch (mode) {
+	case ModeType::LevelMode:
+		return angle * 0 + error;
+	case ModeType::FeatherMode:
+	case ModeType::FurMode:
+		return angle + error + lengthTerm() * 0.05;
+	default:
+		MGlobal::displayError("Stroke type error");
+		return 0;
+	}
+}
+std::vector<float> paintContext::assessGradient(float h) {
+	std::vector<float> output = std::vector<float>(); //The amount by which each t value will be adjusted next iteration
+	float orig = assessObj(); //The current objective function value
+	//float angle = angleTerm();
+	//float error = errorTerm();
+
+	//For every t value, compute the change in obj() that results from a small change in t
+	for (int i = 0; i < rays.size(); i++) {
+		rays[i].t -= h; //t = t - dt
+		output.push_back(assessObj() - orig); //gradient[i] = obj(t[i]-dt) - obj(t[i])
+		rays[i].t += h; //return to original t
+	}
+
+	//adjust t values according to gradient
+	for (int i = 0; i < rays.size(); i++) {
+		rays[i].t += output[i];
+	}
+
+	return output;
+}
+
+//return the magnitude of the gradient to decide when we've reached a minimum (grad ~= 0)
+float gradMag(std::vector<float> grad) {
+	float output = 0;
+	for (int i = 0; i < grad.size(); i++) {
+		output += pow(grad[i], 2);
+	}
+
+	return sqrt(output);
+}
+
+
+void paintContext::initializeT(MFnMesh& mesh, PaintRay& r, bool end) {
+	float error = 10000;
+	float lastError = 10000;
+
+	//check if we can rely on a converging error
+	if (mesh.intersect(r.origin, r.direction, MPointArray())) {
+		while (true) {
+			MPoint closestPoint;
+			MPoint thisPoint = r.point();
+			mesh.getClosestPoint(thisPoint, closestPoint);
+			error = thisPoint.distanceTo(closestPoint);
+			if (end) error -= endLevel;
+			else error -= startLevel;
+			if (error < kMaxError) break;
+			r.t += error;
+		}
+	//if not get near the inflection - REALLY raw right now
+	} else {
+		while (true) {
+			MPoint closestPoint;
+			MPoint thisPoint = r.point();
+			mesh.getClosestPoint(thisPoint, closestPoint);
+			error = thisPoint.distanceTo(closestPoint);
+			if (end) error -= endLevel;
+			else error -= startLevel;
+			if (error > lastError) break;
+			r.t += error;
+			lastError = error;
+		}
+	}
 }
 
 void paintContext::initializeCurve() {
 
 	MStatus s;
-	PaintRay* r;
 
-	//get the mesh
+	//get the mesh: works reliably only after freezing transforms
 	MItDag itr(MItDag::kDepthFirst, MFn::kMesh);
 	MObject meshObj = itr.item();
-
-	//currently operates ONLY on the first mesh it finds
 	MFnMesh mesh(meshObj, &s);
+
+	if (s != MStatus::kSuccess) {
+		MGlobal::displayError("No mesh!");
+		return;
+	}
 
 	if (mode == LevelMode) {
 		//determine t values for every i
 		for (int i = 0; i < rays.size(); i++) {
-			r = &rays[i];
-			float error = 10000;
-			float lastError = 10000;
-
-			//check if we can rely on a converging error
-			if (mesh.intersect(r->origin, r->direction, MPointArray(), &s)) {
-				while (true) {
-					MPoint closestPoint;
-					MPoint thisPoint = r->point();
-					mesh.getClosestPoint(thisPoint, closestPoint);
-					error = thisPoint.distanceTo(closestPoint);
-					error -= startLevel;
-					if (error < kMaxError) break;
-					r->t += error;
-				}
-				//if not get near the inflection - REALLY raw right now
-			}
-			else {
-				while (true) {
-					MPoint closestPoint;
-					MPoint thisPoint = r->point();
-					mesh.getClosestPoint(thisPoint, closestPoint);
-					error = thisPoint.distanceTo(closestPoint);
-					error -= startLevel;
-					if (error > lastError) {
-						break;
-					}
-					r->t += error;
-					lastError = error;
-
-				}
-			}
+			initializeT(mesh, rays[i]);
 		}
 
-		//temporary feather demo - will be replaced by optimization method and custom tool options
-	}
-	else {
+	//initialize hair or feathers
+	} else {
 		//determine t values for first and last i
-		for (int i = 0; i < rays.size(); i += rays.size() - 1) {
-			r = &rays[i];
-			float error = 10000;
-			float lastError = 10000;
-			while (true) {
-				MPoint closestPoint;
-				MPoint thisPoint = r->point();
-				mesh.getClosestPoint(thisPoint, closestPoint);
-				error = thisPoint.distanceTo(closestPoint);
-				if (i > 0) error -= endLevel;
-				else error -= startLevel;
-				if (error > lastError || error < 0.05) {
-					break;
-				}
-				r->t += error;
-				lastError = error;
+		initializeT(mesh, rays[0]);
+		initializeT(mesh, rays[rays.size() - 1], true);
 
-			}
-		}
-
-
+		//linearly interpolate t values for internal points
 		for (int i = 1; i < rays.size() - 1; i++) {
-			r = &rays[i];
+			PaintRay* r = &rays[i];
 			r->t = ((float)i / (float)rays.size()) * (rays.back().t - rays.front().t) + rays.front().t;
 		}
 	}
 }
 
 void paintContext::shapeCurve() {
-
-	PaintRay r;
-	//call curve creation
-	MString base = "curve -d 1";
-	for (int i = 0; i < rays.size(); i++) {
-		r = rays[i];
-		MPoint m = r.point();
-		base += "-p";
-		base += MString(" ") + m[0] + " " + m[1] + " " + m[2];
+	//initial curve
+	sendToMaya();
+	float h = 0.3;
+	float mag = 100;
+	//compute an (hopefully) decreasing gradient until convergence or give-up
+	MGlobal::displayInfo(MString("Initial Angle Term: ") + angleTerm());
+	MGlobal::displayInfo(MString("Initial Error Term: ") + errorTerm());
+	MGlobal::displayInfo("ITERATIVELY OPTIMIZING..................................");
+	while (h > 0.01 && mag > 0.01) {
+		mag = gradMag(assessGradient(h)) / h;
+		h -= 0.001;
 	}
-	base += ";";
-
-	MGlobal::executeCommand(base);
+	MGlobal::displayInfo(MString("Final Angle Term: ") + angleTerm());
+	MGlobal::displayInfo(MString("Initial Error Term: ") + errorTerm());
+	//final curve
+	sendToMaya();
 }
 
 void paintContext::doReleaseCommon(MEvent & event)
@@ -220,17 +255,7 @@ void paintContext::doReleaseCommon(MEvent & event)
 
 	initializeCurve();
 	shapeCurve();
-
-	MGlobal::displayInfo("Ended with " + rays.size() + MString(" rays!"));
 }
-//
-//
-//
-//
-//
-//
-//
-//END TODO
 
 MStatus paintContext::doPress(MEvent & event)
 {
@@ -287,6 +312,19 @@ MStatus	paintContext::doDrag(MEvent & event, MHWRender::MUIDrawManager& drawMgr,
 	return MS::kSuccess;
 }
 
+void paintContext::sendToMaya() {
+	PaintRay r;
+	MString base = "curve -d 1";
+	for (int i = 0; i < rays.size(); i++) {
+		r = rays[i];
+		MPoint m = r.point();
+		base += "-p";
+		base += MString(" ") + m[0] + " " + m[1] + " " + m[2];
+	}
+	base += ";";
+	MGlobal::executeCommand(base);
+}
+
 void paintContext::setStartLevel(float theLevel) {
 	startLevel = theLevel;
 }
@@ -298,3 +336,4 @@ void paintContext::setEndLevel(float level) {
 void paintContext::setMode(int modeInt) {
 	mode = static_cast<ModeType>(modeInt);
 }
+

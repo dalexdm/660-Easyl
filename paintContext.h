@@ -1,6 +1,7 @@
 #pragma once
 #include <maya\MPxContext.h>
 #include <vector>
+#include <maya\MFnMesh.h>
 #include <maya\MStatus.h>
 #include <maya\MPoint.h>
 #include <maya\MVector.h>
@@ -36,11 +37,11 @@ public:
 	virtual MStatus	doRelease(MEvent & event, MHWRender::MUIDrawManager& drawMgr, const MHWRender::MFrameContext& context);
 	virtual MStatus	doDrag(MEvent & event, MHWRender::MUIDrawManager& drawMgr, const MHWRender::MFrameContext& context);
 
-	//tool Settings methods
+	//tool Settings methods - set
 	void setStartLevel(float level);
 	void setEndLevel(float level);
 	void setMode(int modeInt);
-
+	//get
 	float getStartLevel() { return startLevel; };
 	float getEndLevel() { return endLevel; };
 	int getMode() { return (int)mode; };
@@ -51,10 +52,12 @@ private:
 	void doPressCommon(MEvent & event);
 	void doReleaseCommon(MEvent & event);
 	void initializeCurve();
+	void initializeT(MFnMesh& mesh, PaintRay& r, bool end = false);
 	float angleTerm();
 	float lengthTerm();
 	float errorTerm();
 	void shapeCurve();
+	void sendToMaya();
 
 	// Temporary vector abstractions
 	std::vector<PaintRay> rays;
@@ -65,7 +68,7 @@ private:
 	ModeType mode;
 	float weight_a, weight_l, weight_e;
 	float assessObj();
-	std::vector<float> assessGradient();
+	std::vector<float> assessGradient(float h);
 
 	// screen space object
 	M3dView view;
