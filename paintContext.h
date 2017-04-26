@@ -20,7 +20,7 @@ public:
 	MPoint point() { return origin + t*direction; }
 };
 
-enum ModeType {ErrorMode,LevelMode,FeatherMode,FurMode};
+enum ModeType {ErrorMode,LevelMode,FurMode,FeatherMode};
 
 class paintContext : public MPxContext
 {
@@ -69,6 +69,7 @@ private:
 	float weight_a, weight_l, weight_e;
 	float assessObj();
 	std::vector<float> assessGradient(float h);
+	void refinePoint(int i);
 
 	// screen space object
 	M3dView view;

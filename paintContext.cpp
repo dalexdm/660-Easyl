@@ -5,7 +5,7 @@
 #include <maya\MGlobal.h>
 
 const char helpString[] = "Drag with the left mouse button to paint";
-const float kMaxError = 0.1;
+const float kMaxError = 0.05;
 const int thresholdDefault = 3;
 
 void print(MString s) {
@@ -51,20 +51,34 @@ void paintContext::doPressCommon(MEvent & event)
 	rays.push_back(PaintRay(newOrg,newDir));
 }
 
-//Components of objective function
+//Converging (FINALLY!!!!!) but unintended mutation of the very last point (seems to bend 90deg)
+//also 1/10 lines will have a random kink?
 float paintContext::angleTerm() {
 	//cycle through each pair of adjacent segments
 	float output = 0;
 	float dot;
 	MPoint p1,p2,p3;
 	MVector v1, v2;
+
+	if (mode == ModeType::FurMode) {
+		//get that mesh
+		MItDag itr(MItDag::kDepthFirst, MFn::kMesh);
+		MObject meshObj = itr.item();
+		MFnMesh mesh(meshObj);
+		//prepend a control point (p1) directly toward the mesh from where we are
+		p2 = rays[0].point(); p3 = rays[1].point();
+		mesh.getClosestPoint(p2, p1);
+		v1 = p2 - p1; v2 = p3 - p2;
+		dot = v1.normal() * v2.normal();
+		//assess cost based on the existence of that point
+		output += pow(1 - dot, 2);
+	}
 	
 	for (int i = 0; i < rays.size() - 2; i++) {
 		//get unit vectors representing consecutive stroke segments
 		p1 = rays[i].point(); p2 = rays[i + 1].point(); p3 = rays[i + 2].point();
 		v1 = p2 - p1; v2 = p3 - p2;
 		dot = v1.normal() * v2.normal();
-		if (dot < 0) dot = 0;
 		//output the 'cost': 0 = parallel... 1 = orthogonal
 		output += pow(1 - dot,2);
 	}
@@ -91,12 +105,11 @@ float paintContext::errorTerm() {
 		for (int i = 0; i < rays.size(); i++) {
 			actual = rays[i].point();
 			mesh.getClosestPoint(actual, closest);
-			output += pow(actual.distanceTo(closest) - startLevel - 0.1, 2);
+			output += pow(actual.distanceTo(closest) - startLevel - 0.001, 2);
 		}
 
 	//in fur/feather, only the accuracy of the first and last points are weighted
 	} else {
-		MGlobal::displayError("Didn't Expect to be using this yet...");
 		//first
 		actual = rays[0].point();
 		mesh.getClosestPoint(actual, closest);
@@ -116,56 +129,50 @@ float paintContext::assessObj() {
 
 	switch (mode) {
 	case ModeType::LevelMode:
-		return angle * 0 + error;
+		return error + angle *0.1;
 	case ModeType::FeatherMode:
 	case ModeType::FurMode:
-		return angle + error + lengthTerm() * 0.05;
+		return angle + error + lengthTerm() * 0.05; //error will not change for internal fur/feather points, will consider caching for lighter iteration
 	default:
 		MGlobal::displayError("Stroke type error");
 		return 0;
 	}
 }
-std::vector<float> paintContext::assessGradient(float h) {
-	std::vector<float> output = std::vector<float>(); //The amount by which each t value will be adjusted next iteration
-	float orig = assessObj(); //The current objective function value
-	//float angle = angleTerm();
-	//float error = errorTerm();
 
-	//For every t value, compute the change in obj() that results from a small change in t
-	for (int i = 0; i < rays.size(); i++) {
-		rays[i].t -= h; //t = t - dt
-		output.push_back(assessObj() - orig); //gradient[i] = obj(t[i]-dt) - obj(t[i])
-		rays[i].t += h; //return to original t
+void paintContext::refinePoint(int i) {
+	float h = 0.001;
+	float gamma = 5;
+	float grad = 100;
+	float currentObj = 0;
+	//gradually decrease descent step size - recently changed from constant h and variable gamma coefficient
+	while (gamma > 0.01 && pow(grad,2) > 0.000000001) {
+		//finite difference to find the gradient
+		if (i == 0) currentObj = errorTerm(); // first point should not be angle-weighted
+		else currentObj = assessObj();
+		rays[i].t += h;
+		if (i == 0) grad = errorTerm() - currentObj;
+		else grad = (assessObj() - currentObj); //moving t by h changes f(t) by grad
+		rays[i].t -= h; //return h to original value (for clarity)
+
+		//descent step
+		rays[i].t += gamma * -grad;
+		gamma -= 0.01;
 	}
 
-	//adjust t values according to gradient
-	for (int i = 0; i < rays.size(); i++) {
-		rays[i].t += output[i];
-	}
-
-	return output;
 }
-
-//return the magnitude of the gradient to decide when we've reached a minimum (grad ~= 0)
-float gradMag(std::vector<float> grad) {
-	float output = 0;
-	for (int i = 0; i < grad.size(); i++) {
-		output += pow(grad[i], 2);
-	}
-
-	return sqrt(output);
-}
-
 
 void paintContext::initializeT(MFnMesh& mesh, PaintRay& r, bool end) {
 	float error = 10000;
 	float lastError = 10000;
+	float stepSize = 0;
+	MPoint closestPoint, thisPoint;
+	float oldDistance = 100;
+	float newDistance = 0;
 
 	//check if we can rely on a converging error
 	if (mesh.intersect(r.origin, r.direction, MPointArray())) {
 		while (true) {
-			MPoint closestPoint;
-			MPoint thisPoint = r.point();
+			thisPoint = r.point();
 			mesh.getClosestPoint(thisPoint, closestPoint);
 			error = thisPoint.distanceTo(closestPoint);
 			if (end) error -= endLevel;
@@ -173,18 +180,28 @@ void paintContext::initializeT(MFnMesh& mesh, PaintRay& r, bool end) {
 			if (error < kMaxError) break;
 			r.t += error;
 		}
-	//if not get near the inflection - REALLY raw right now
+
 	} else {
-		while (true) {
-			MPoint closestPoint;
-			MPoint thisPoint = r.point();
+		//loops until closest point on ray is found (~linesearch)
+		while (oldDistance - newDistance > kMaxError) {
+			//get the oldDistance from the point
+			thisPoint = r.point();
 			mesh.getClosestPoint(thisPoint, closestPoint);
-			error = thisPoint.distanceTo(closestPoint);
-			if (end) error -= endLevel;
-			else error -= startLevel;
-			if (error > lastError) break;
-			r.t += error;
-			lastError = error;
+			oldDistance = thisPoint.distanceTo(closestPoint);
+			stepSize = oldDistance;
+			while (true) {
+				//create a newDistance by adding a step
+				thisPoint = r.point() + r.direction*stepSize;
+				mesh.getClosestPoint(thisPoint, closestPoint);
+				newDistance = thisPoint.distanceTo(closestPoint);
+				//if newDistance is better, repeat outer
+				if (newDistance - oldDistance < 0.005) {
+					r.t += stepSize;
+					break;
+				}
+				//otherwise reduce until newDistance is better or error is too small
+				stepSize /= 2;
+			}
 		}
 	}
 }
@@ -224,39 +241,44 @@ void paintContext::initializeCurve() {
 }
 
 void paintContext::shapeCurve() {
+
+
 	//initial curve
 	sendToMaya();
-	float h = 0.3;
-	float mag = 100;
-	//compute an (hopefully) decreasing gradient until convergence or give-up
 	MGlobal::displayInfo(MString("Initial Angle Term: ") + angleTerm());
 	MGlobal::displayInfo(MString("Initial Error Term: ") + errorTerm());
-	MGlobal::displayInfo("ITERATIVELY OPTIMIZING..................................");
-	while (h > 0.01 && mag > 0.01) {
-		mag = gradMag(assessGradient(h)) / h;
-		h -= 0.001;
+	MGlobal::displayInfo("ITERATIVELY OPTIMIZING...........................");
+	//go through each ray, starting at the 'root' point, and optimize piecemeal
+	for (int i = 0; i < rays.size(); i++) {
+		refinePoint(i);
 	}
+	MGlobal::displayInfo("DONE OPTIMIZING..................................");
 	MGlobal::displayInfo(MString("Final Angle Term: ") + angleTerm());
-	MGlobal::displayInfo(MString("Initial Error Term: ") + errorTerm());
+	MGlobal::displayInfo(MString("Final Error Term: ") + errorTerm());
+
 	//final curve
 	sendToMaya();
 }
 
 void paintContext::doReleaseCommon(MEvent & event)
 {
-	// Extract the event information
 	short x, y;
 	event.getPosition(x, y);
-	MPoint newOrg = MPoint();
-	MVector newDir = MVector();
-	view.viewToWorld(x, y, newOrg, newDir);
+	//see if the release was far enough away from the last point to warrant a ray
+	if (!sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 10) {
 
-	rays.push_back(PaintRay(newOrg, newDir));
+		MPoint newOrg = MPoint();
+		MVector newDir = MVector();
+		view.viewToWorld(x, y, newOrg, newDir);
 
+		rays.push_back(PaintRay(newOrg, newDir));
+
+	}
+
+	//begin creation of new curve
 	initializeCurve();
 	shapeCurve();
 }
-
 MStatus paintContext::doPress(MEvent & event)
 {
 	view = M3dView::active3dView();
@@ -268,13 +290,14 @@ MStatus paintContext::doDrag(MEvent & event)
 	// Extract the event information
 	short x, y;
 	event.getPosition(x, y);
-	if (sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 3) return MS::kSuccess;
+	if (sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 10) return MS::kSuccess;
 
 	MPoint newOrg = MPoint();
 	MVector newDir = MVector();
 	view.viewToWorld(x, y, newOrg, newDir);
 
 	rays.push_back(PaintRay(newOrg, newDir));
+	lastx = x; lasty = y;
 
 	return MS::kSuccess;
 }
@@ -301,13 +324,14 @@ MStatus	paintContext::doDrag(MEvent & event, MHWRender::MUIDrawManager& drawMgr,
 	// Extract the event information
 	short x, y;
 	event.getPosition(x, y);
-	if (sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 3) return MS::kSuccess;
+	if (sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 10) return MS::kSuccess;
 
 	MPoint newOrg = MPoint();
 	MVector newDir = MVector();
 	view.viewToWorld(x, y, newOrg, newDir);
 
 	rays.push_back(PaintRay(newOrg, newDir));
+	lastx = x; lasty = y;
 
 	return MS::kSuccess;
 }
@@ -328,11 +352,9 @@ void paintContext::sendToMaya() {
 void paintContext::setStartLevel(float theLevel) {
 	startLevel = theLevel;
 }
-
 void paintContext::setEndLevel(float level) {
 	endLevel = level;
 }
-
 void paintContext::setMode(int modeInt) {
 	mode = static_cast<ModeType>(modeInt);
 }
