@@ -51,9 +51,9 @@ void paintContext::doPressCommon(MEvent & event)
 	rays.push_back(PaintRay(newOrg,newDir));
 }
 
-//Converging (FINALLY!!!!!) but unintended mutation of the very last point (seems to bend 90deg)
+//Converging (FINALLY!!!!!)
 //also 1/10 lines will have a random kink?
-float paintContext::angleTerm() {
+float paintContext::angleTerm(int index) {
 	//cycle through each pair of adjacent segments
 	float output = 0;
 	float dot;
@@ -79,6 +79,10 @@ float paintContext::angleTerm() {
 		p1 = rays[i].point(); p2 = rays[i + 1].point(); p3 = rays[i + 2].point();
 		v1 = p2 - p1; v2 = p3 - p2;
 		dot = v1.normal() * v2.normal();
+		if (i + 2 > index) dot *= 0.0;
+
+		//HACK HACK HACK ^^^ This will hopefully be remedied once i figure out the situation down below.
+
 		//output the 'cost': 0 = parallel... 1 = orthogonal
 		output += pow(1 - dot,2);
 	}
@@ -123,18 +127,17 @@ float paintContext::errorTerm() {
 }
 
 //Assess all three objective functions and weight each as prescribed in paper
-float paintContext::assessObj() {
-	float angle = angleTerm();
-	float error = errorTerm();
+float paintContext::assessObj(int i) {
 
 	switch (mode) {
 	case ModeType::LevelMode:
-		return error + angle *0.1;
+		return errorTerm() + angleTerm(i) * 0.1;
 	case ModeType::FeatherMode:
 	case ModeType::FurMode:
-		return angle + error + lengthTerm() * 0.05; //error will not change for internal fur/feather points, will consider caching for lighter iteration
+		if (i != 0 && i != rays.size() - 1) return angleTerm(i) + lengthTerm() * 0.1; //interior fur/feather wont affect error, dont compute
+		else return errorTerm();
 	default:
-		MGlobal::displayError("Stroke type error");
+		MGlobal::displayError("Unrecognized stroke type error");
 		return 0;
 	}
 }
@@ -147,11 +150,9 @@ void paintContext::refinePoint(int i) {
 	//gradually decrease descent step size - recently changed from constant h and variable gamma coefficient
 	while (gamma > 0.01 && pow(grad,2) > 0.000000001) {
 		//finite difference to find the gradient
-		if (i == 0) currentObj = errorTerm(); // first point should not be angle-weighted
-		else currentObj = assessObj();
+		currentObj = assessObj(i);
 		rays[i].t += h;
-		if (i == 0) grad = errorTerm() - currentObj;
-		else grad = (assessObj() - currentObj); //moving t by h changes f(t) by grad
+		grad = (assessObj(i) - currentObj); //moving t by h changes f(t) by grad
 		rays[i].t -= h; //return h to original value (for clarity)
 
 		//descent step
@@ -232,10 +233,18 @@ void paintContext::initializeCurve() {
 		initializeT(mesh, rays[0]);
 		initializeT(mesh, rays[rays.size() - 1], true);
 
-		//linearly interpolate t values for internal points
+		//EXPERIMENTAL
+		//create an intersection plane on which to project the linearly initialize points
+		MPoint P = rays[rays.size() - 1].point();
+		MVector R = rays[rays.size() - 1].direction; //~eye to last
+		MVector D = rays[0].point() - P; //last to first
+		MVector planeNormal = D ^ (R^D); // Borrowing the 'minimum skew plane' from secondSkin: D x (R x D)
+
+		//STABLE BUT NAIVE
 		for (int i = 1; i < rays.size() - 1; i++) {
-			PaintRay* r = &rays[i];
-			r->t = ((float)i / (float)rays.size()) * (rays.back().t - rays.front().t) + rays.front().t;
+			//typical plane intersection to linearly position internals
+			rays[i].t = ((P - rays[i].origin) * planeNormal)
+						/ (rays[i].direction * planeNormal);
 		}
 	}
 }
@@ -245,7 +254,6 @@ void paintContext::shapeCurve() {
 
 	//initial curve
 	sendToMaya();
-	MGlobal::displayInfo(MString("Initial Angle Term: ") + angleTerm());
 	MGlobal::displayInfo(MString("Initial Error Term: ") + errorTerm());
 	MGlobal::displayInfo("ITERATIVELY OPTIMIZING...........................");
 	//go through each ray, starting at the 'root' point, and optimize piecemeal
@@ -253,7 +261,6 @@ void paintContext::shapeCurve() {
 		refinePoint(i);
 	}
 	MGlobal::displayInfo("DONE OPTIMIZING..................................");
-	MGlobal::displayInfo(MString("Final Angle Term: ") + angleTerm());
 	MGlobal::displayInfo(MString("Final Error Term: ") + errorTerm());
 
 	//final curve

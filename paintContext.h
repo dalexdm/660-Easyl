@@ -53,7 +53,7 @@ private:
 	void doReleaseCommon(MEvent & event);
 	void initializeCurve();
 	void initializeT(MFnMesh& mesh, PaintRay& r, bool end = false);
-	float angleTerm();
+	float angleTerm(int i);
 	float lengthTerm();
 	float errorTerm();
 	void shapeCurve();
@@ -67,8 +67,7 @@ private:
 	float startLevel, endLevel;
 	ModeType mode;
 	float weight_a, weight_l, weight_e;
-	float assessObj();
-	std::vector<float> assessGradient(float h);
+	float assessObj(int i);
 	void refinePoint(int i);
 
 	// screen space object
