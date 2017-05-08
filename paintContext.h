@@ -54,8 +54,8 @@ private:
 	void initializeCurve();
 	void initializeT(MFnMesh& mesh, PaintRay& r, bool end = false);
 	float angleTerm(int i);
-	float lengthTerm();
-	float errorTerm();
+	float lengthTerm(int i );
+	float errorTerm(int i);
 	void shapeCurve();
 	void sendToMaya();
 

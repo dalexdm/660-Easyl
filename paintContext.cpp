@@ -6,6 +6,7 @@
 
 const char helpString[] = "Drag with the left mouse button to paint";
 const float kMaxError = 0.05;
+const float DRAW_RESOLUTION = 0.2; //between 1 (very very fine) and 0.1 (pretty coarse) 
 const int thresholdDefault = 3;
 
 void print(MString s) {
@@ -52,50 +53,58 @@ void paintContext::doPressCommon(MEvent & event)
 }
 
 //Converging (FINALLY!!!!!)
-//also 1/10 lines will have a random kink?
 float paintContext::angleTerm(int index) {
-	//cycle through each pair of adjacent segments
 	float output = 0;
 	float dot;
 	MPoint p1,p2,p3;
 	MVector v1, v2;
 
-	if (mode == ModeType::FurMode) {
+	//for the first point of a non-level-set stroke, we want to use a control point
+	if (mode != ModeType::LevelMode && index == 1) {
 		//get that mesh
 		MItDag itr(MItDag::kDepthFirst, MFn::kMesh);
 		MObject meshObj = itr.item();
 		MFnMesh mesh(meshObj);
-		//prepend a control point (p1) directly toward the mesh from where we are
-		p2 = rays[0].point(); p3 = rays[1].point();
-		mesh.getClosestPoint(p2, p1);
-		v1 = p2 - p1; v2 = p3 - p2;
-		dot = v1.normal() * v2.normal();
-		//assess cost based on the existence of that point
-		output += pow(1 - dot, 2);
-	}
-	
-	for (int i = 0; i < rays.size() - 2; i++) {
-		//get unit vectors representing consecutive stroke segments
-		p1 = rays[i].point(); p2 = rays[i + 1].point(); p3 = rays[i + 2].point();
-		v1 = p2 - p1; v2 = p3 - p2;
-		dot = v1.normal() * v2.normal();
-		if (i + 2 > index) dot *= 0.0;
 
-		//HACK HACK HACK ^^^ This will hopefully be remedied once i figure out the situation down below.
+		p2 = rays[0].point(); p3 = rays[1].point();
+		//p1 is now on the mesh surface
+		mesh.getClosestPoint(p2, p1);
+
+		if (mode == ModeType::FurMode) {
+			//prepend a control point (p1) directly toward the mesh from where we are
+			v1 = p2 - p1; v2 = p3 - p2;
+			dot = v1.normal() * v2.normal();
+			//assess cost of first angle based on the existence of that point
+			output += pow(1 - dot, 2);
+		}
+		else if (mode == ModeType::FeatherMode) {
+			//we want the cross of the point-to-surface and (the point-to-surface and the point-to-last-point)
+			v1 = (p1 - p2) ^ ((p1 - p2) ^ (rays[rays.size() - 1].point() - p2)); v2 = p3 - p2;
+			dot = -(v1.normal()) * v2.normal();
+			//again, always calculate that first dot
+			output += pow(1 - dot, 2) * 2;
+		}
+	} 
+	
+	//for the interior points of every stroke, we optimize for straightness
+	else if (index > 1 && index < rays.size()) {
+		//get unit vectors representing consecutive stroke segments
+		p1 = rays[index-2].point(); p2 = rays[index-1].point(); p3 = rays[index].point();
+		v1 = p2 - p1; v2 = p3 - p2;
+		dot = v1.normal() * v2.normal();
 
 		//output the 'cost': 0 = parallel... 1 = orthogonal
-		output += pow(1 - dot,2);
+		output += pow(1 - dot, 2);
 	}
 	return output;
 }
-float paintContext::lengthTerm() {
+float paintContext::lengthTerm(int index) {
 	float output = 0;
-	for (int i = 0; i < rays.size()-1; i++) {
-		output += pow(rays[i + 1].point().distanceTo(rays[i].point()),2);
-	}
+	if (index > 0) output += pow(rays[index - 1].point().distanceTo(rays[index].point()),2);
+	if (index < rays.size() - 1) output += pow(rays[index + 1].point().distanceTo(rays[index].point()), 2);
 	return output;
 }
-float paintContext::errorTerm() {
+float paintContext::errorTerm(int index) {
 	//find the mesh in the scene
 	MItDag itr(MItDag::kDepthFirst, MFn::kMesh);
 	MObject meshObj = itr.item();
@@ -104,22 +113,15 @@ float paintContext::errorTerm() {
 	MPoint actual, closest;
 	float output = 0;
 
-	//for level mode, the error is counted for every ray
-	if (mode == ModeType::LevelMode) {
-		for (int i = 0; i < rays.size(); i++) {
-			actual = rays[i].point();
-			mesh.getClosestPoint(actual, closest);
-			output += pow(actual.distanceTo(closest) - startLevel - 0.001, 2);
-		}
-
-	//in fur/feather, only the accuracy of the first and last points are weighted
-	} else {
-		//first
-		actual = rays[0].point();
+	//check the error for all level points, or the first point of fur/feather
+	if (mode == ModeType::LevelMode || index == 0) {
+		actual = rays[index].point();
 		mesh.getClosestPoint(actual, closest);
-		output += pow(actual.distanceTo(closest) - startLevel, 2);
-		//last
-		actual = rays[rays.size() - 1].point();
+		return pow(actual.distanceTo(closest) - startLevel - 0.001, 2);
+
+	//check error for last point of fur/feather (uses end level)
+	} else if (index == rays.size() - 1) {
+		actual = rays[index].point();
 		mesh.getClosestPoint(actual, closest);
 		output += pow(actual.distanceTo(closest) - endLevel, 2);
 	}
@@ -131,11 +133,11 @@ float paintContext::assessObj(int i) {
 
 	switch (mode) {
 	case ModeType::LevelMode:
-		return errorTerm() + angleTerm(i) * 0.1;
+		return errorTerm(i) + angleTerm(i) * 0.1;
 	case ModeType::FeatherMode:
 	case ModeType::FurMode:
-		if (i != 0 && i != rays.size() - 1) return angleTerm(i) + lengthTerm() * 0.1; //interior fur/feather wont affect error, dont compute
-		else return errorTerm();
+		if (i == 0) return errorTerm(i); //root, must lie on desired level set for intelligibility
+		else return angleTerm(i) + lengthTerm(i) * 0.1; //interior fur/feather wont affect error, dont compute
 	default:
 		MGlobal::displayError("Unrecognized stroke type error");
 		return 0;
@@ -157,7 +159,7 @@ void paintContext::refinePoint(int i) {
 
 		//descent step
 		rays[i].t += gamma * -grad;
-		gamma -= 0.01;
+		gamma -= 0.03;
 	}
 
 }
@@ -189,7 +191,7 @@ void paintContext::initializeT(MFnMesh& mesh, PaintRay& r, bool end) {
 			thisPoint = r.point();
 			mesh.getClosestPoint(thisPoint, closestPoint);
 			oldDistance = thisPoint.distanceTo(closestPoint);
-			stepSize = oldDistance;
+			stepSize = oldDistance / 3;
 			while (true) {
 				//create a newDistance by adding a step
 				thisPoint = r.point() + r.direction*stepSize;
@@ -240,7 +242,6 @@ void paintContext::initializeCurve() {
 		MVector D = rays[0].point() - P; //last to first
 		MVector planeNormal = D ^ (R^D); // Borrowing the 'minimum skew plane' from secondSkin: D x (R x D)
 
-		//STABLE BUT NAIVE
 		for (int i = 1; i < rays.size() - 1; i++) {
 			//typical plane intersection to linearly position internals
 			rays[i].t = ((P - rays[i].origin) * planeNormal)
@@ -253,15 +254,13 @@ void paintContext::shapeCurve() {
 
 
 	//initial curve
-	sendToMaya();
-	MGlobal::displayInfo(MString("Initial Error Term: ") + errorTerm());
+	//sendToMaya();
 	MGlobal::displayInfo("ITERATIVELY OPTIMIZING...........................");
 	//go through each ray, starting at the 'root' point, and optimize piecemeal
 	for (int i = 0; i < rays.size(); i++) {
 		refinePoint(i);
 	}
 	MGlobal::displayInfo("DONE OPTIMIZING..................................");
-	MGlobal::displayInfo(MString("Final Error Term: ") + errorTerm());
 
 	//final curve
 	sendToMaya();
@@ -272,7 +271,7 @@ void paintContext::doReleaseCommon(MEvent & event)
 	short x, y;
 	event.getPosition(x, y);
 	//see if the release was far enough away from the last point to warrant a ray
-	if (!sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 10) {
+	if (!sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 1.0 / DRAW_RESOLUTION) {
 
 		MPoint newOrg = MPoint();
 		MVector newDir = MVector();
@@ -297,7 +296,7 @@ MStatus paintContext::doDrag(MEvent & event)
 	// Extract the event information
 	short x, y;
 	event.getPosition(x, y);
-	if (sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 10) return MS::kSuccess;
+	if (sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 1.0 / DRAW_RESOLUTION) return MS::kSuccess;
 
 	MPoint newOrg = MPoint();
 	MVector newDir = MVector();
@@ -331,7 +330,7 @@ MStatus	paintContext::doDrag(MEvent & event, MHWRender::MUIDrawManager& drawMgr,
 	// Extract the event information
 	short x, y;
 	event.getPosition(x, y);
-	if (sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 10) return MS::kSuccess;
+	if (sqrt(pow(lastx - x, 2) + pow(lasty - y, 2)) < 1.0/DRAW_RESOLUTION) return MS::kSuccess;
 
 	MPoint newOrg = MPoint();
 	MVector newDir = MVector();
@@ -345,15 +344,17 @@ MStatus	paintContext::doDrag(MEvent & event, MHWRender::MUIDrawManager& drawMgr,
 
 void paintContext::sendToMaya() {
 	PaintRay r;
-	MString base = "curve -d 1";
-	for (int i = 0; i < rays.size(); i++) {
+	MString base = "string $theCurve = `curve -d 1";
+	for (int i = 0; i < rays.size()-1; i++) {
 		r = rays[i];
 		MPoint m = r.point();
-		base += "-p";
+		base += " -p";
 		base += MString(" ") + m[0] + " " + m[1] + " " + m[2];
 	}
-	base += ";";
+	base += "`;";
 	MGlobal::executeCommand(base);
+	MGlobal::executeCommand("AttachBrushToCurves;convertCurvesToStrokes;manipMoveValues Move;toolPropertyShow;autoUpdateAttrEd;");
+	MGlobal::executeCommand("delete $theCurve;");
 }
 
 void paintContext::setStartLevel(float theLevel) {
